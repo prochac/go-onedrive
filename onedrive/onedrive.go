@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -86,9 +87,11 @@ func (c *Client) NewRequest(method, relativeURL string, body interface{}) (*http
 			return nil, err
 		}
 
-		req, err := http.NewRequest(method, apiUrl.String(), bytes.NewBuffer([]byte(jsonBody)))
+		req, err := http.NewRequest(method, apiUrl.String(), bytes.NewBuffer(jsonBody))
+		if err != nil {
+			return nil, err
+		}
 		req.Header.Set("Content-Type", "application/json")
-
 		return req, nil
 	}
 
@@ -101,7 +104,7 @@ func (c *Client) NewRequest(method, relativeURL string, body interface{}) (*http
 // NewFileUploadRequest creates an API request to upload files. A relative URL can be provided in relativeURL,
 // in which case it is resolved relative to the BaseURL of the Client.
 // Relative URLs should always be specified WITHOUT a preceding slash.
-func (c *Client) NewFileUploadRequest(relativeURL string, contentType string, fileReader *bytes.Reader) (*http.Request, error) {
+func (c *Client) NewFileUploadRequest(relativeURL string, contentType string, fileReader io.Reader) (*http.Request, error) {
 	if !strings.HasSuffix(c.BaseURL.Path, "/") {
 		return nil, fmt.Errorf("BaseURL must have a trailing slash, but %q does not.", c.BaseURL)
 	}
@@ -117,9 +120,11 @@ func (c *Client) NewFileUploadRequest(relativeURL string, contentType string, fi
 
 	// Create a new request using http
 	req, err := http.NewRequest("PUT", apiUrl.String(), fileReader)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", contentType)
-
-	return req, err
+	return req, nil
 }
 
 // NewRequest creates an API request to OneDrive API directly with an absolute URL.
@@ -139,14 +144,15 @@ func (c *Client) NewRequestToOneDrive(method, absoluteUrl string, body interface
 
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
-
 		if err != nil {
 			return nil, err
 		}
 
-		req, err := http.NewRequest(method, absoluteUrl, bytes.NewBuffer([]byte(jsonBody)))
+		req, err := http.NewRequest(method, absoluteUrl, bytes.NewBuffer(jsonBody))
+		if err != nil {
+			return nil, err
+		}
 		req.Header.Set("Content-Type", "application/json")
-
 		return req, nil
 	}
 

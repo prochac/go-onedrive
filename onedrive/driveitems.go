@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 
@@ -504,6 +505,49 @@ func (s *DriveItemsService) UploadNewFile(ctx context.Context, driveId string, d
 	fileType, _ := filetype.Match(buffer)
 
 	req, err := s.client.NewFileUploadRequest(apiURL, fileType.MIME.Value, fileReader)
+	if err != nil {
+		return nil, err
+	}
+
+	var response *DriveItem
+	err = s.client.Do(ctx, req, false, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
+// UploadFileFromReader is to upload a file to a drive of the authenticated user
+// from io.Reader. The source of data is io.Reader, what is more flexible. Because
+// io.Reader contains no metadata, file name and MIME type has to be specified
+// explicitly.
+//
+// By default, this API will upload and then rename an item if there is an existing item
+// with the same name on OneDrive.
+//
+// If driveId is empty, it means the selected drive will be the default drive of
+// the authenticated user.
+//
+// OneDrive API docs: https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_put_content?view=odsp-graph-online#http-request-to-upload-a-new-file
+func (s *DriveItemsService) UploadFileFromReader(ctx context.Context, driveId string, destinationParentFolderId string, fileName, fileType string, fileData io.Reader) (*DriveItem, error) {
+	if destinationParentFolderId == "" {
+		return nil, errors.New("Please provide the destination, i.e. the ID of the parent folder for this new item.")
+	}
+
+	if fileData == nil {
+		return nil, errors.New("Please provide the file reader.")
+	}
+
+	// Limit data to 4MB
+	dataReader := io.LimitReader(fileData, 4*1024*1024)
+
+	apiURL := "me/drive/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/content?@microsoft.graph.conflictBehavior=rename"
+	if driveId != "" {
+		apiURL = "me/drives/" + url.PathEscape(driveId) + "/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/content?@microsoft.graph.conflictBehavior=rename"
+	}
+
+	req, err := s.client.NewFileUploadRequest(apiURL, fileType, dataReader)
 	if err != nil {
 		return nil, err
 	}
