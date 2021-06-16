@@ -543,6 +543,14 @@ func (s *DriveItemsService) UploadNewFile(ctx context.Context, driveId string, d
 	return response, nil
 }
 
+type UploadFileFromReaderOpts struct {
+	DriveID string
+	// ConflictBehavior customizes the conflict resolution behavior. By default,
+	// existing item will be replaced. Possible values are "fail", "replace", or
+	// "rename".
+	ConflictBehavior string
+}
+
 // UploadFileFromReader is to upload a file to a drive of the authenticated user
 // from io.Reader. The source of data is io.Reader, what is more flexible. Because
 // io.Reader contains no metadata, file name and MIME type has to be specified
@@ -555,7 +563,13 @@ func (s *DriveItemsService) UploadNewFile(ctx context.Context, driveId string, d
 // the authenticated user.
 //
 // OneDrive API docs: https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_put_content?view=odsp-graph-online#http-request-to-upload-a-new-file
-func (s *DriveItemsService) UploadFileFromReader(ctx context.Context, driveId string, destinationParentFolderId string, fileName, fileType string, fileData io.Reader) (*DriveItem, error) {
+func (s *DriveItemsService) UploadFileFromReader(
+	ctx context.Context,
+	destinationParentFolderId string,
+	fileName, fileType string,
+	fileData io.Reader,
+	opts UploadFileFromReaderOpts,
+) (*DriveItem, error) {
 	if destinationParentFolderId == "" {
 		return nil, errors.New("Please provide the destination, i.e. the ID of the parent folder for this new item.")
 	}
@@ -567,9 +581,12 @@ func (s *DriveItemsService) UploadFileFromReader(ctx context.Context, driveId st
 	// Limit data to 4MB
 	dataReader := io.LimitReader(fileData, 4*1024*1024)
 
-	apiURL := "me/drive/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/content?@microsoft.graph.conflictBehavior=rename"
-	if driveId != "" {
-		apiURL = "me/drives/" + url.PathEscape(driveId) + "/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/content?@microsoft.graph.conflictBehavior=rename"
+	apiURL := "me/drive/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/content"
+	if opts.DriveID != "" {
+		apiURL = "me/drives/" + url.PathEscape(opts.DriveID) + "/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/content"
+	}
+	if opts.ConflictBehavior != "" {
+		apiURL += "?@microsoft.graph.conflictBehavior=" + opts.ConflictBehavior
 	}
 
 	req, err := s.client.NewFileUploadRequest(apiURL, fileType, dataReader)
