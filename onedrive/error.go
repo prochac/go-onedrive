@@ -17,6 +17,13 @@ type Error struct {
 	InnerError       *InnerError `json:"innerError"`
 }
 
+func (e *Error) Error() string {
+	if e.InnerError != nil {
+		return e.Code + " - " + e.Message + " (" + e.InnerError.Date + ")"
+	}
+	return e.Code + " - " + e.Message
+}
+
 // InnerError represents the error details in the error returned by OneDrive drive API.
 type InnerError struct {
 	Date            string `json:"date"`

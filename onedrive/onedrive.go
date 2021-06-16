@@ -223,11 +223,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request, isUsingPlainHttpClie
 		json.NewDecoder(responseBodyReader).Decode(&oneDriveError)
 
 		if oneDriveError.Error != nil {
-			if oneDriveError.Error.InnerError != nil {
-				return errors.New(oneDriveError.Error.Code + " - " + oneDriveError.Error.Message + " (" + oneDriveError.Error.InnerError.Date + ")")
-			}
-
-			return errors.New(oneDriveError.Error.Code + " - " + oneDriveError.Error.Message)
+			return oneDriveError.Error
 		}
 
 		responseBodyReader = bytes.NewReader(responseBody)
