@@ -203,6 +203,30 @@ func (s *DriveItemsService) Get(ctx context.Context, itemId string) (*DriveItem,
 	return driveItem, nil
 }
 
+// GetByPath an item in the default drive of the authenticated user.
+//
+// OneDrive API docs: https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_get
+func (s *DriveItemsService) GetByPath(ctx context.Context, itemPath string) (*DriveItem, error) {
+	if itemPath == "" {
+		return nil, errors.New("Please provide the path of the item.")
+	}
+
+	apiURL := "me/drive/root:/" + url.PathEscape(itemPath)
+
+	req, err := s.client.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var driveItem *DriveItem
+	err = s.client.Do(ctx, req, false, &driveItem)
+	if err != nil {
+		return nil, err
+	}
+
+	return driveItem, nil
+}
+
 // Get an item from special folder in the default drive of the authenticated user.
 //
 // OneDrive API docs: https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/drive_get_specialfolder?view=odsp-graph-online
