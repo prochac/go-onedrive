@@ -171,35 +171,19 @@ func (c *Client) Do(ctx context.Context, req *http.Request, isUsingPlainHttpClie
 	}
 	req = req.WithContext(ctx)
 
-	var err error
-	var resp *http.Response
-
+	var (
+		resp *http.Response
+		err  error
+	)
 	if isUsingPlainHttpClient {
 		httpClient := &http.Client{}
 		resp, err = httpClient.Do(req)
 	} else {
 		resp, err = c.client.Do(req)
 	}
-
 	if err != nil {
-		// If we got an error, and the context has been canceled, the error from the context is probably more useful.
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		// If the error type is *url.Error, sanitize its URL before returning.
-		if e, ok := err.(*url.Error); ok {
-			if url, err := url.Parse(e.URL); err == nil {
-				e.URL = sanitizeURL(url).String()
-				return e
-			}
-		}
-
-		return err
+		return processHTTPError(ctx, err)
 	}
-
 	defer resp.Body.Close()
 
 	responseBody, err := ioutil.ReadAll(resp.Body)
@@ -229,6 +213,25 @@ func (c *Client) Do(ctx context.Context, req *http.Request, isUsingPlainHttpClie
 		responseBodyReader = bytes.NewReader(responseBody)
 		err = json.NewDecoder(responseBodyReader).Decode(target)
 
+	}
+
+	return err
+}
+
+func processHTTPError(ctx context.Context, err error) error {
+	// If we got an error, and the context has been canceled, the error from the context is probably more useful.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// If the error type is *url.Error, sanitize its URL before returning.
+	if e, ok := err.(*url.Error); ok {
+		if url, err := url.Parse(e.URL); err == nil {
+			e.URL = sanitizeURL(url).String()
+			return e
+		}
 	}
 
 	return err

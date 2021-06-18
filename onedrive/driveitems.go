@@ -11,8 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/h2non/filetype"
 )
@@ -556,9 +561,6 @@ type UploadFileFromReaderOpts struct {
 // io.Reader contains no metadata, file name and MIME type has to be specified
 // explicitly.
 //
-// By default, this API will upload and then rename an item if there is an existing item
-// with the same name on OneDrive.
-//
 // If driveId is empty, it means the selected drive will be the default drive of
 // the authenticated user.
 //
@@ -601,6 +603,194 @@ func (s *DriveItemsService) UploadFileFromReader(
 	}
 
 	return response, nil
+}
+
+type UploadLargeFileOpts struct {
+	DriveID string
+	// ConflictBehavior customizes the conflict resolution behavior. By default,
+	// existing item will be replaced. Possible values are "fail", "replace", or
+	// "rename".
+	ConflictBehavior string
+	// ChunkSize customizes the size of chunks. Default is 4 MiB.
+	ChunkSize uint64
+}
+
+// UploadSession provides information about how to upload large files to
+// OneDrive, OneDrive for Business, or SharePoint document libraries.
+//
+// OneDrive API docs:
+// https://docs.microsoft.com/en-us/onedrive/developer/rest-api/resources/uploadsession
+type UploadSession struct {
+	ODataContext       string    `json:"@odata.context"`
+	ExpirationDateTime time.Time `json:"expirationDateTime"`
+	NextExpectedRanges []string  `json:"nextExpectedRanges"`
+	UploadUrl          string    `json:"uploadUrl"`
+}
+
+// UploadLargeFile is to upload a file larger than 4 MiB to a drive of the
+// authenticated user. The source of data is io.ReaderAt, because the data are
+// uploaded is chunks.
+//
+// If driveId is empty, it means the selected drive will be the default drive of
+// the authenticated user.
+//
+// OneDrive API docs:
+// https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_createuploadsession
+func (s *DriveItemsService) UploadLargeFile(
+	ctx context.Context,
+	destinationParentFolderId string,
+	fileName string,
+	fileSize uint64,
+	fileData io.ReaderAt,
+	opts UploadLargeFileOpts,
+) (*DriveItem, error) {
+	if destinationParentFolderId == "" {
+		return nil, errors.New("Please provide the destination, i.e. the ID of the parent folder for this new item.")
+	}
+
+	if fileData == nil {
+		return nil, errors.New("Please provide the file reader.")
+	}
+
+	apiURL := "me/drive/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/createUploadSession"
+	if opts.DriveID != "" {
+		apiURL = "me/drives/" + url.PathEscape(opts.DriveID) + "/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/createUploadSession"
+	}
+	if opts.ConflictBehavior != "" {
+		apiURL += "?@microsoft.graph.conflictBehavior=" + opts.ConflictBehavior
+	}
+
+	apiUrl, err := s.client.BaseURL.Parse(apiURL)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", apiUrl.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	var session UploadSession
+	err = s.client.Do(ctx, req, false, &session)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		req, err := http.NewRequest("DELETE", session.UploadUrl, nil)
+		if err != nil {
+			return // err
+		}
+		resp, err := s.client.client.Do(req)
+		if err != nil {
+			return // err
+		}
+		if resp.StatusCode != 204 {
+			return // err
+		}
+	}()
+
+	var chunkSize uint64 = 4 * 1024 * 1024
+	if opts.ChunkSize != 0 {
+		chunkSize = opts.ChunkSize
+	}
+	buffer := make([]byte, chunkSize)
+	return s.uploadChunk(ctx, session.UploadUrl, fileData, buffer, 0, chunkSize, fileSize)
+}
+
+func (s *DriveItemsService) uploadChunk(
+	ctx context.Context,
+	sessURL string,
+	source io.ReaderAt,
+	buffer []byte,
+	offset, length, totalSize uint64,
+) (*DriveItem, error) {
+	if uint64(len(buffer)) < length {
+		buffer = make([]byte, length)
+	}
+	buffer = buffer[:length]
+	n, err := source.ReadAt(buffer, int64(offset))
+	if n == 0 {
+		// The n == 0 is valid check and by documentation, error is non-nil here:
+		// 	  When ReadAt returns n < len(p), it returns a non-nil error
+		//	  explaining why more bytes were not returned.
+		if err == io.EOF {
+			// We should have get DataItem object as response already. No data to read, and no
+			// data in buffer. No other chunk! We have nothing to send to get it.
+			return nil, errors.New("unexpected EOF")
+		}
+		return nil, err
+	}
+	buffer = buffer[:n]
+	uploadReq, err := http.NewRequestWithContext(ctx, "PUT", sessURL, bytes.NewReader(buffer))
+	if err != nil {
+		return nil, err
+	}
+	uploadReq.Header.Set("Content-Length", strconv.Itoa(n))
+	uploadReq.Header.Set("Content-Range",
+		fmt.Sprintf("bytes %d-%d/%d",
+			offset,
+			offset-1+uint64(n), // -1 because zero based range
+			totalSize,
+		),
+	)
+	resp, err := s.client.client.Do(uploadReq)
+	if err != nil {
+		return nil, processHTTPError(ctx, err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	switch resp.StatusCode {
+	// File is complete
+	// https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_createuploadsession#completing-a-file
+	case 200, 201:
+		var item DriveItem
+		if err := json.Unmarshal(responseBody, &item); err != nil {
+			return nil, err
+		}
+		return &item, nil
+	// Next chunk expected
+	// https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_createuploadsession#response-1
+	case 202:
+		var session UploadSession
+		if err := json.Unmarshal(responseBody, &session); err != nil {
+			return nil, err
+		}
+
+		if len(session.NextExpectedRanges) < 1 {
+			return nil, fmt.Errorf("next expected ranges is empty, but we didn't receive DriveItem obejct in response")
+		}
+
+		sp := strings.Split(session.NextExpectedRanges[0], "-")
+		start, end := sp[0], sp[1]
+		nextOffset, err := strconv.ParseUint(start, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		nextLength := length
+		if end != "" {
+			nextLength, err = strconv.ParseUint(end, 10, 64)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// upload next chunk and expect the final to return DriverItem.
+		return s.uploadChunk(ctx, sessURL, source, buffer, nextOffset, nextLength, totalSize)
+	default:
+		var oneDriveError *ErrorResponse
+		if err := json.Unmarshal(responseBody, &oneDriveError); err != nil {
+			return nil, err
+		}
+		if oneDriveError.Error == nil {
+			return nil, fmt.Errorf("%s: %s", resp.Status, responseBody)
+		}
+		return nil, oneDriveError.Error
+	}
 }
 
 func (s *DriveItemsService) DownloadItem(ctx context.Context, item *DriveItem) ([]byte, error) {
