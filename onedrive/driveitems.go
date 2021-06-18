@@ -605,16 +605,6 @@ func (s *DriveItemsService) UploadFileFromReader(
 	return response, nil
 }
 
-type UploadLargeFileOpts struct {
-	DriveID string
-	// ConflictBehavior customizes the conflict resolution behavior. By default,
-	// existing item will be replaced. Possible values are "fail", "replace", or
-	// "rename".
-	ConflictBehavior string
-	// ChunkSize customizes the size of chunks. Default is 4 MiB.
-	ChunkSize uint64
-}
-
 // UploadSession provides information about how to upload large files to
 // OneDrive, OneDrive for Business, or SharePoint document libraries.
 //
@@ -625,6 +615,22 @@ type UploadSession struct {
 	ExpirationDateTime time.Time `json:"expirationDateTime"`
 	NextExpectedRanges []string  `json:"nextExpectedRanges"`
 	UploadUrl          string    `json:"uploadUrl"`
+}
+
+type LargeFile struct {
+	Name string
+	Size uint64
+	Data io.ReaderAt
+}
+
+type UploadLargeFileOpts struct {
+	DriveID string
+	// ConflictBehavior customizes the conflict resolution behavior. By default,
+	// existing item will be replaced. Possible values are "fail", "replace", or
+	// "rename".
+	ConflictBehavior string
+	// ChunkSize customizes the size of chunks. Default is 4 MiB.
+	ChunkSize uint64
 }
 
 // UploadLargeFile is to upload a file larger than 4 MiB to a drive of the
@@ -639,22 +645,26 @@ type UploadSession struct {
 func (s *DriveItemsService) UploadLargeFile(
 	ctx context.Context,
 	destinationParentFolderId string,
-	fileName string,
-	fileSize uint64,
-	fileData io.ReaderAt,
+	file LargeFile,
 	opts UploadLargeFileOpts,
 ) (*DriveItem, error) {
 	if destinationParentFolderId == "" {
 		return nil, errors.New("Please provide the destination, i.e. the ID of the parent folder for this new item.")
 	}
 
-	if fileData == nil {
+	if file.Name == "" {
+		return nil, errors.New("Please provide the file name.")
+	}
+	if file.Size == 0 {
+		return nil, errors.New("Please provide the file size.")
+	}
+	if file.Data == nil {
 		return nil, errors.New("Please provide the file reader.")
 	}
 
-	apiURL := "me/drive/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/createUploadSession"
+	apiURL := "me/drive/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(file.Name) + ":/createUploadSession"
 	if opts.DriveID != "" {
-		apiURL = "me/drives/" + url.PathEscape(opts.DriveID) + "/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(fileName) + ":/createUploadSession"
+		apiURL = "me/drives/" + url.PathEscape(opts.DriveID) + "/items/" + url.PathEscape(destinationParentFolderId) + ":/" + url.PathEscape(file.Name) + ":/createUploadSession"
 	}
 	if opts.ConflictBehavior != "" {
 		apiURL += "?@microsoft.graph.conflictBehavior=" + opts.ConflictBehavior
@@ -695,21 +705,21 @@ func (s *DriveItemsService) UploadLargeFile(
 		chunkSize = opts.ChunkSize
 	}
 	buffer := make([]byte, chunkSize)
-	return s.uploadChunk(ctx, session.UploadUrl, fileData, buffer, 0, chunkSize, fileSize)
+	return s.uploadChunk(ctx, session.UploadUrl, buffer, 0, chunkSize, file)
 }
 
 func (s *DriveItemsService) uploadChunk(
 	ctx context.Context,
 	sessURL string,
-	source io.ReaderAt,
 	buffer []byte,
-	offset, length, totalSize uint64,
+	offset, length uint64,
+	file LargeFile,
 ) (*DriveItem, error) {
 	if uint64(len(buffer)) < length {
 		buffer = make([]byte, length)
 	}
 	buffer = buffer[:length]
-	n, err := source.ReadAt(buffer, int64(offset))
+	n, err := file.Data.ReadAt(buffer, int64(offset))
 	if n == 0 {
 		// The n == 0 is valid check and by documentation, error is non-nil here:
 		// 	  When ReadAt returns n < len(p), it returns a non-nil error
@@ -731,7 +741,7 @@ func (s *DriveItemsService) uploadChunk(
 		fmt.Sprintf("bytes %d-%d/%d",
 			offset,
 			offset-1+uint64(n), // -1 because zero based range
-			totalSize,
+			file.Size,
 		),
 	)
 	resp, err := s.client.client.Do(uploadReq)
@@ -780,7 +790,7 @@ func (s *DriveItemsService) uploadChunk(
 		}
 
 		// upload next chunk and expect the final to return DriverItem.
-		return s.uploadChunk(ctx, sessURL, source, buffer, nextOffset, nextLength, totalSize)
+		return s.uploadChunk(ctx, sessURL, buffer, nextOffset, nextLength, file)
 	default:
 		var oneDriveError *ErrorResponse
 		if err := json.Unmarshal(responseBody, &oneDriveError); err != nil {
