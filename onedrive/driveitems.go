@@ -345,8 +345,12 @@ func (s *DriveItemsService) Delete(ctx context.Context, driveId string, itemId s
 		apiURL = "me/drives/" + url.PathEscape(driveId) + "/items/" + url.PathEscape(itemId)
 	}
 
-	_, err := s.client.NewRequest("DELETE", apiURL, nil)
+	req, err := s.client.NewRequest("DELETE", apiURL, nil)
 	if err != nil {
+		return err
+	}
+
+	if err := s.client.Do(ctx, req, false, nil); err != nil {
 		return err
 	}
 
