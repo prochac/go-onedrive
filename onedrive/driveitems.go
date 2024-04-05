@@ -257,7 +257,7 @@ func (s *DriveItemsService) GetSpecial(ctx context.Context, folderName DriveSpec
 	return driveItem, nil
 }
 
-// Create a new folder in a drive of the authenticated user.
+// CreateNewFolder creates a new folder in a drive of the authenticated user.
 // If there is already a folder in the same OneDrive directory with the same name,
 // OneDrive will choose a new name for the folder while creating it.
 //
@@ -269,6 +269,26 @@ func (s *DriveItemsService) GetSpecial(ctx context.Context, folderName DriveSpec
 //
 // OneDrive API docs: https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_post_children?view=odsp-graph-online
 func (s *DriveItemsService) CreateNewFolder(ctx context.Context, driveId string, parentFolderName string, folderName string) (*DriveItem, error) {
+	return s.CreateNewFolderWithOpts(ctx, driveId, parentFolderName, folderName, CreateNewFolderOpts{ConflictBehavior: "rename"})
+}
+
+// CreateNewFolderOpts represents the options for creating a new folder in a drive of the authenticated user by CreateNewFolderWithOpts.
+type CreateNewFolderOpts struct {
+	// ConflictBehavior customizes the conflict resolution behavior. By default,
+	// existing item will be replaced. Possible values are "fail", "replace", or "rename".
+	ConflictBehavior string
+}
+
+// CreateNewFolderWithOpts creates a new folder in a drive of the authenticated user with options.
+//
+// If driveId is empty, it means the selected drive will be the default drive of
+// the authenticated user.
+//
+// If parentFolderName is empty, it means the new folder will be created at
+// the root of the default drive.
+//
+// OneDrive API docs: https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_post_children?view=odsp-graph-online
+func (s *DriveItemsService) CreateNewFolderWithOpts(ctx context.Context, driveId string, parentFolderName string, folderName string, opts CreateNewFolderOpts) (*DriveItem, error) {
 	if folderName == "" {
 		return nil, errors.New("Please provide the folder name.")
 	}
@@ -284,10 +304,14 @@ func (s *DriveItemsService) CreateNewFolder(ctx context.Context, driveId string,
 
 	folderFacet := &Facet{}
 
+	if opts.ConflictBehavior == "" {
+		opts.ConflictBehavior = "fail"
+	}
+
 	newFolder := &NewFolderCreationRequest{
 		FolderName:       folderName,
 		FolderFacet:      *folderFacet,
-		ConflictBehavior: "rename",
+		ConflictBehavior: opts.ConflictBehavior,
 	}
 
 	req, err := s.client.NewRequest("POST", apiURL, newFolder)
